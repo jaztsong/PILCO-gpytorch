@@ -13,26 +13,30 @@ def predict_wrapper(mgpr, m, s):
     return mgpr.predict_on_noisy_inputs(m, s)
 
 def test_predictions():
-    np.random.seed(1)
+    # np.random.seed(1)
     d = 3  # Input dimension
     k = 2  # Number of outputs
-    n = 10 # number of datapoints
+    n = 100 # number of datapoints
 
     # Training Dataset
-    X0 = np.random.rand(n, d)
+    X0 = np.random.randn(n, d)
     A = np.random.rand(d, k)
     Y0 = np.sin(X0).dot(A) + 1e-3*(np.random.rand(n, k) - 0.5)  #  Just something smooth
+
     mgpr = MGPR(X0, Y0)
 
     mgpr.optimize()
 
     # Generate input
-    m = np.random.rand(1, d)  # But MATLAB defines it as m'
+    m = np.random.randn(1, d)  # But MATLAB defines it as m'
     s = np.random.rand(d, d)
     s = s.dot(s.T)  # Make s positive semidefinite
 
-    M, S, V = mgpr.predict_on_noisy_inputs(m, s)
+    M, S, V = mgpr(m, s)
 
+    M = M.detach().cpu().numpy()
+    S = S.detach().cpu().numpy()
+    V = V.detach().cpu().numpy()
     # Change the dataset and predict again. Just to make sure that we don't cache something we shouldn't.
     # X0 = 5*np.random.rand(n, d)
     # mgpr.set_XY(X0, Y0) 

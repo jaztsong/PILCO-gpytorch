@@ -48,8 +48,7 @@ class ExponentialReward(Module):
         sR = r2 - muR @ muR
         # muR.set_shape([1, 1])
         # sR.set_shape([1, 1])
-        
-        return muR, sR
+        return muR.reshape((1,1)), sR.reshape((1,1))
 
 
 class LinearReward(Module):

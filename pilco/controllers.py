@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import gpytorch
 from torch.autograd import Variable
+from torch.nn import Parameter
 
 from pilco.models import MGPR
 
@@ -35,14 +36,17 @@ def squash_sin(m, s, max_action=None):
         tmp = tmp.reshape(1,)
     C = max_action * torch.diag(tmp).squeeze()
 
-    return M, S.squeeze(2), C.reshape(k,k)
+    if S.dim() > 2:
+        S = S.squeeze(-1)
+    return M, S, C.reshape(k,k)
 
 
 class LinearController(torch.nn.Module):
     def __init__(self, state_dim, control_dim, max_action=None):
         # gpflow.Parameterized.__init__(self)
-        self.W = Variable(torch.rand(control_dim, state_dim),requires_grad=True)
-        self.b = Variable(torch.rand(1, control_dim),requires_grad=True)
+        super(LinearController, self).__init__()
+        self.W = Variable(torch.rand(control_dim, state_dim).float().cuda(),requires_grad=True)
+        self.b = Variable(torch.rand(1, control_dim).float().cuda(),requires_grad=True)
         self.max_action = max_action
 
     def compute_action(self, m, s, squash=True):
@@ -51,6 +55,13 @@ class LinearController(torch.nn.Module):
         IN: mean (m) and variance (s) of the state
         OUT: mean (M) and variance (S) of the action
         '''
+        if type(m) != torch.Tensor:
+            m = torch.tensor(m).float().cuda()
+            print("Warning: gradient may break in controller.compute_action")
+        if type(s) != torch.Tensor:
+            s = torch.tensor(s).float().cuda()
+            print("Warning: gradient may break in controller.compute_action")
+
         M = m @ self.W.t() + self.b # mean output
         S = self.W @ s @ self.W.t() # output variance
         V = self.W.t() #input output covariance

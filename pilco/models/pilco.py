@@ -6,8 +6,39 @@ import time
 from .mgpr import MGPR
 from .. import controllers
 from .. import rewards
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 torch.set_default_dtype(torch.float32)
+
+def plot_grad_flow(named_parameters):
+    '''Plots the gradients flowing through different layers in the net during training.
+    Can be used for checking for possible gradient vanishing / exploding problems.
+    
+    Usage: Plug this function in Trainer class after loss.backwards() as 
+    "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
+    ave_grads = []
+    max_grads= []
+    layers = []
+    for n, p in named_parameters:
+        if(p.requires_grad) and ("bias" not in n):
+            layers.append(n)
+            ave_grads.append(p.grad.abs().mean())
+            max_grads.append(p.grad.abs().max())
+    plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="c")
+    plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1, color="b")
+    plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
+    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
+    plt.xlim(left=0, right=len(ave_grads))
+    plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
+    plt.xlabel("Layers")
+    plt.ylabel("average gradient")
+    plt.title("Gradient flow")
+    plt.grid(True)
+    plt.legend([Line2D([0], [0], color="c", lw=4),
+                Line2D([0], [0], color="b", lw=4),
+                Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
+    plt.show()
 
 class PILCO(torch.nn.Module):
     def __init__(self, X, Y, num_induced_points=None, horizon=30, controller=None,
@@ -57,23 +88,25 @@ class PILCO(torch.nn.Module):
         print('---Variances---\n',variance)
         print('---Noises---\n',noise)
 
-    def optimize_policy(self, maxiter=50, restarts=1):
+    def optimize_policy(self, maxiter=12, restarts=1):
         '''
         Optimize controller's parameter's
         '''
 
         optimizer = torch.optim.Adam([
             {'params':self.controller.parameters()},
-            ], lr=1e-2)
+            ], lr=1e-4)
+
         start = time.time()
         m = torch.tensor(self.m_init).float().cuda()
         s = torch.tensor(self.S_init).float().cuda()
         reward = torch.zeros(1).float().cuda()
         for i in range(maxiter):
             optimizer.zero_grad()
-            reward = self.predict(m,s,self.horizon)[0]
+            reward = self.predict(m,s,self.horizon)[2]
             loss = -reward
             loss.backward()
+            # plot_grad_flow(self.controller.parameters())
             print('(Optimize Policy: Iter %d/%d - Loss: %.3f)' % (i,maxiter,loss.item()))
             optimizer.step()
 
@@ -82,7 +115,9 @@ class PILCO(torch.nn.Module):
 
 
     def compute_action(self, x_m):
-        return self.controller.compute_action(x_m, torch.zeros((self.state_dim, self.state_dim)))[0]
+        x_m = torch.tensor(x_m).float().cuda()
+        x_s = torch.zeros((self.state_dim, self.state_dim)).float().cuda()
+        return self.controller.compute_action(x_m, x_s )[0]
 
     def predict(self, m_x, s_x, n):
         m = m_x
@@ -108,7 +143,8 @@ class PILCO(torch.nn.Module):
         s2 = torch.cat(((s_x@c_xu).t(), s_u), 1)
         s = torch.cat((s1, s2), 0)
 
-        M_dx, S_dx, C_dx = self.mgpr.predict_on_noisy_inputs(m, s)
+        # M_dx, S_dx, C_dx = self.mgpr.predict_on_noisy_inputs(m, s)
+        M_dx, S_dx, C_dx = self.mgpr(m, s)
 
         # M_dx = torch.tensor(M_dx)
         # S_dx = torch.tensor(S_dx)

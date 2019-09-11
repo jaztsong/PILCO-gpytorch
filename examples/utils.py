@@ -19,7 +19,9 @@ def rollout(env, pilco, timesteps, verbose=True, random=False, SUBS=1, render=Tr
         X.append(np.hstack((x, u)))
         Y.append(x_new - x)
         x = x_new
-        if done: break
+        if done: 
+            print("Env Done...")
+            break
     return np.stack(X), np.stack(Y)
 
 
@@ -27,7 +29,9 @@ def policy(env, pilco, x, random):
     if random:
         return env.action_space.sample()
     else:
-        return pilco.compute_action(x[None, :])[0, :]
+        print("DEBUG: predict action")
+        u = pilco.compute_action(x[None, :])[0, :]
+        return u.detach().cpu().numpy()
 
 
 
