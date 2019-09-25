@@ -28,6 +28,7 @@ def test_reward():
             torch.tensor(s).float().cuda())
 
     M_mat, _, _, S_mat = octave.reward(m.T, s, t.T, W, nout=4)
+    import pdb;pdb.set_trace()
 
     np.testing.assert_allclose(M.cpu().numpy(), M_mat)
     np.testing.assert_allclose(S.cpu().numpy(), S_mat)

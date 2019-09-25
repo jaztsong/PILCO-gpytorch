@@ -32,8 +32,9 @@ def squash_sin(m, s, max_action=None):
     S = max_action * torch.t(max_action) * S / 2
 
     tmp = torch.exp(-torch.diag(s)/2) * torch.cos(m)
-    if tmp.shape == ():
-        tmp = tmp.reshape(1,)
+
+    if tmp.dim() > 1:
+        tmp = tmp.squeeze(0)
     C = max_action * torch.diag(tmp).squeeze()
 
     if S.dim() > 2:

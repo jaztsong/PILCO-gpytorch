@@ -13,7 +13,7 @@ def predict_wrapper(mgpr, m, s):
     return mgpr.predict_on_noisy_inputs(m, s)
 
 def test_predictions():
-    # np.random.seed(1)
+    # np.random.seed(0)
     d = 3  # Input dimension
     k = 2  # Number of outputs
     n = 100 # number of datapoints
@@ -28,7 +28,7 @@ def test_predictions():
     mgpr.optimize()
 
     # Generate input
-    m = np.random.randn(1, d)  # But MATLAB defines it as m'
+    m = np.random.rand(1, d)  # But MATLAB defines it as m'
     s = np.random.rand(d, d)
     s = s.dot(s.T)  # Make s positive semidefinite
 

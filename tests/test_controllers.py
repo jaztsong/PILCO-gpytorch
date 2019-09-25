@@ -4,7 +4,7 @@ sys.path.append("/home/song3/Research/PILCO-gpytorch")
 from pilco.controllers import RbfController, LinearController, squash_sin
 import numpy as np
 import os
-import tensorflow as tf
+import torch
 import oct2py
 octave = oct2py.Oct2Py()
 dir_path = os.path.dirname(os.path.realpath("__file__")) + "/tests/Matlab Code"
@@ -21,7 +21,7 @@ def test_rbf():
     X0 = np.random.rand(100, d)
     A = np.random.rand(d, k)
     Y0 = np.sin(X0).dot(A) + 1e-3*(np.random.rand(100, k) - 0.5)  #  Just something smooth
-    rbf = RbfController(3, 2, b)
+    rbf = LinearController(3, 2, b)
     rbf.set_XY(X0, Y0)
 
     # Generate input
@@ -54,7 +54,6 @@ def test_rbf():
     assert M.shape == M_mat.T.shape
     assert S.shape == S_mat.shape
     assert V.shape == V_mat.shape
-    import pdb;pdb.set_trace()
     np.testing.assert_allclose(M, M_mat.T, rtol=1e-4)
     np.testing.assert_allclose(S, S_mat, rtol=1e-4)
     np.testing.assert_allclose(V, V_mat, rtol=1e-4)
@@ -72,10 +71,10 @@ def test_linear():
     b = np.random.rand(1, k)
 
     linear = LinearController(d, k)
-    linear.W = W
-    linear.b = b
+    linear.W = torch.from_numpy(W).float().cuda()
+    linear.b = torch.from_numpy(b).float().cuda()
 
-    M, S, V = compute_action_wrapper(linear, m, s)
+    M, S, V = linear.compute_action(m, s,squash=False)
 
     # convert data to the struct expected by the MATLAB implementation
     policy = oct2py.io.Struct()
@@ -89,7 +88,7 @@ def test_linear():
     assert M.shape == M_mat.T.shape
     assert S.shape == S_mat.shape
     assert V.shape == V_mat.shape
-    #np.testing.assert_allclose(M, M_mat.T, rtol=1e-4)
+    np.testing.assert_allclose(M, M_mat.T, rtol=1e-4)
     np.testing.assert_allclose(S, S_mat, rtol=1e-4)
     np.testing.assert_allclose(V, V_mat, rtol=1e-4)
 
@@ -102,12 +101,11 @@ def test_squash():
     s = s.dot(s.T)
     e = 7.0
 
-    M, S, V = squash_sin(m, s, e)
-    sess = tf.Session()
-    M, S, V = sess.run([M, S, V])
+    M, S, V = squash_sin(torch.tensor(m).float().cuda(), torch.tensor(s).float().cuda(), torch.tensor(e).float().cuda())
 
     M_mat, S_mat, V_mat = octave.gSin(m.T, s, e, nout=3)
     M_mat = np.asarray(M_mat)
+    import pdb;pdb.set_trace()
 
     assert M.shape == M_mat.T.shape
     assert S.shape == S_mat.shape
@@ -119,6 +117,6 @@ def test_squash():
 
 
 if __name__ == '__main__':
-    test_rbf()
-    test_linear()
+    # test_rbf()
+    # test_linear()
     test_squash()

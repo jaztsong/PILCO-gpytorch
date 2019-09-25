@@ -11,7 +11,7 @@ from matplotlib.lines import Line2D
 
 torch.set_default_dtype(torch.float32)
 
-def plot_grad_flow(named_parameters):
+def plot_grad_flow_v2(named_parameters):
     '''Plots the gradients flowing through different layers in the net during training.
     Can be used for checking for possible gradient vanishing / exploding problems.
     
@@ -38,7 +38,6 @@ def plot_grad_flow(named_parameters):
     plt.legend([Line2D([0], [0], color="c", lw=4),
                 Line2D([0], [0], color="b", lw=4),
                 Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
-    plt.show()
 
 class PILCO(torch.nn.Module):
     def __init__(self, X, Y, num_induced_points=None, horizon=30, controller=None,
@@ -73,7 +72,8 @@ class PILCO(torch.nn.Module):
         self.optimizer = None
 
 
-    def optimize_models(self, maxiter=200, restarts=1):
+
+    def optimize_models(self, maxiter=100, restarts=1):
         '''
         Optimize GP models
         '''
@@ -95,7 +95,7 @@ class PILCO(torch.nn.Module):
 
         optimizer = torch.optim.Adam([
             {'params':self.controller.parameters()},
-            ], lr=1e-4)
+            ], lr=1e-3)
 
         start = time.time()
         m = torch.tensor(self.m_init).float().cuda()
@@ -106,7 +106,7 @@ class PILCO(torch.nn.Module):
             reward = self.predict(m,s,self.horizon)[2]
             loss = -reward
             loss.backward()
-            # plot_grad_flow(self.controller.parameters())
+            # plot_grad_flow_v2(self.controller.parameters())
             print('(Optimize Policy: Iter %d/%d - Loss: %.3f)' % (i,maxiter,loss.item()))
             optimizer.step()
 
@@ -122,6 +122,8 @@ class PILCO(torch.nn.Module):
     def predict(self, m_x, s_x, n):
         m = m_x
         s = s_x
+        self.mgpr.model.eval()
+        self.mgpr.likelihood.eval()
         reward = torch.zeros(1).float().cuda()
         for _ in range(n):
             m, s = self.propagate(m,s)

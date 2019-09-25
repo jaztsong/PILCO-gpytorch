@@ -11,12 +11,13 @@ from filterpy.kalman import unscented_transform, MerweScaledSigmaPoints
 class ExactGPModel(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood):
         super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
-        self.mean_module = gpytorch.means.ConstantMean(batch_size=train_y.shape[0])
+        self.num_out = train_y.shape[0]
+        self.mean_module = gpytorch.means.ConstantMean(batch_size=self.num_out)
         self.covar_module = gpytorch.kernels.ScaleKernel(
                 gpytorch.kernels.RBFKernel(ard_num_dims=train_x.shape[2],
                     # lengthscale_prior = gpytorch.priors.GammaPrior(1,10),
-                    batch_size=train_y.shape[0]),
-                batch_size=train_y.shape[0],
+                    batch_size=self.num_out),
+                batch_size=self.num_out,
                 # outputscale_prior = gpytorch.priors.GammaPrior(1.5,2),
                 )
 
@@ -27,7 +28,7 @@ class ExactGPModel(gpytorch.models.ExactGP):
 
 
 class MGPR(torch.nn.Module):
-    def __init__(self, X, Y, learning_rate=10e-4): # The input requires X as a nxd tensor and Y is 1xn tensor
+    def __init__(self, X, Y, learning_rate=8e-2): # The input requires X as a nxd tensor and Y is 1xn tensor
         super(MGPR, self).__init__()
         self.num_outputs = Y.shape[1]
         self.num_dims = X.shape[1]
@@ -66,12 +67,31 @@ class MGPR(torch.nn.Module):
         self.likelihood.train()
         self.model.train()
 
+        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.model)
+
+        ##Use lbfgs optimzer
+        #optimizer = torch.optim.LBFGS([
+        #    {'params': self.model.parameters()},  # Includes GaussianLikelihood parameters
+        #    ])
+        #def closure():
+        #    optimizer.zero_grad()
+        #    # Output from model
+        #    output = self.model(self.X)
+        #     # Calc loss and backprop gradients
+        #    loss = -mll(output, self.Y).sum()
+        #    loss.backward()
+        #    print('Iter %d/%d - Loss: %.3f' % (i + 1, training_iter, loss.item()))
+        #    return loss
+
+        #for i in range(training_iter):
+        #    optimizer.step(closure)
+
+
         # Use the adam optimizer
         optimizer = torch.optim.Adam([
             {'params': self.model.parameters()},  # Includes GaussianLikelihood parameters
             ], lr=self.lr)
         # "Loss" for GPs - the marginal log likelihood
-        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.model)
         for i in range(training_iter):
             # Zero gradients from previous iteration
             optimizer.zero_grad()
@@ -92,7 +112,12 @@ class MGPR(torch.nn.Module):
 
 
         lambda_ = alpha**2 * (n + kappa) - n
-        U = torch.cholesky((lambda_ + n)*P)
+        try:
+            U = torch.cholesky((lambda_ + n)*P)
+        except:
+            U = torch.zeros((n,n)).float().cuda()
+
+
 
         sigmas = torch.zeros((2*n+1, n)).float().cuda()
         sigmas[0] = x
@@ -103,8 +128,101 @@ class MGPR(torch.nn.Module):
 
         return sigmas
 
+    def calculate_factorizations(self):
+        '''
+                K = self.K(self.X)
+        batched_eye = tf.eye(tf.shape(self.X)[0], batch_shape=[self.num_outputs], dtype=float_type)
+        L = tf.cholesky(K + self.noise[:, None, None]*batched_eye)
+        iK = tf.cholesky_solve(L, batched_eye)
+        Y_ = tf.transpose(self.Y)[:, :, None]
+        # Why do we transpose Y? Maybe we need to change the definition of self.Y() or beta?
+        beta = tf.cholesky_solve(L, Y_)[:, :, 0]
+        return iK, beta
+                '''
+
+        K = self.K(self.model.train_inputs[0]).evaluate()
+        batched_eye = torch.eye(self.model.train_inputs[0].shape[1]).repeat(self.model.train_targets.shape[0],1,1).float().cuda()
+        L = psd_safe_cholesky(K + self.model.likelihood.noise[:,None]*batched_eye)
+        iK = torch.cholesky_solve(batched_eye, L)
+        Y_ = self.model.train_targets[:,:,None]
+        beta = torch.cholesky_solve(Y_, L)[:,:,0]
+
+        return iK, beta
+    def predict_given_factorizations(self, m, s ,iK, beta):
+        """
+        Approximate GP regression at noisy inputs via moment matching
+        IN: mean (m) (row vector) and (s) variance of the state
+        OUT: mean (M) (row vector), variance (S) of the action
+             and inv(s)*input-ouputcovariance
+        """
+
+        s = s.repeat(self.num_outputs, self.num_outputs, 1, 1)
+        inp = self.centralized_input(m)
+        
+
+        # Calculate M and V: mean and inv(s) times input-output covariance
+        iL = torch.diag_embed(1/(self.model.covar_module.base_kernel.lengthscale.squeeze(1)))
+        iN = inp @ iL
+        B = iL @ s[0, ...] @ iL + torch.eye(self.num_dims).float().cuda()
+
+        # Redefine iN as in^T and t --> t^T
+        # B is symmetric so its the same
+        t,_ = torch.solve(torch.transpose(iN,dim0=1,dim1=2), B)
+        t = torch.transpose(t, dim0=1,dim1=2)
+
+        lb = torch.exp(-torch.sum(iN * t, -1)/2) * beta
+        tiL = t @ iL
+        t_det = torch.zeros(B.shape[0]).float().cuda()
+        for i in range(B.shape[0]):
+            t_det[i] = torch.det(B[i])
+
+        c = self.model.covar_module.outputscale / torch.sqrt(t_det)
+
+        M = (torch.sum(lb, -1) * c)[:, None]
+        V = (torch.transpose(tiL, dim0=1,dim1=2) @ lb[:, :, None])[..., 0] * c[:, None]
+
+        # Calculate S: Predictive Covariance
+        R_0 = torch.diag_embed(
+                1/torch.pow(self.model.covar_module.base_kernel.lengthscale.squeeze(1)[None,:,:],2) + 
+                1/torch.pow(self.model.covar_module.base_kernel.lengthscale.squeeze(1)[:,None,:],2) 
+                )
+        R = s @ R_0 + torch.eye(self.num_dims).float().cuda()
+
+        # TODO: change this block according to the PR of tensorflow. Maybe move it into a function?
+        X = inp[None, :, :, :]/torch.pow(self.model.covar_module.base_kernel.lengthscale.squeeze(1)[:, None, None, :],2)
+        X2 = -inp[:, None, :, :]/torch.pow(self.model.covar_module.base_kernel.lengthscale.squeeze(1)[None, :, None, :],2)
+        q_x, _ = torch.solve(s, R)
+        Q = q_x/2
+        Xs = torch.sum(X @ Q * X, -1)
+        X2s = torch.sum(X2 @ Q * X2, -1)
+        maha = -2 * ((X @ Q) @ torch.transpose(X2,dim0=2,dim1=3)) + \
+           Xs[:, :, :, None] + X2s[:, :, None, :]
+
+        #
+        k = torch.log(self.model.covar_module.outputscale)[:, None] - \
+            torch.sum(torch.pow(iN,2), -1)/2
+        L = torch.exp(k[:, None, :, None] + k[None, :, None, :] + maha)
+        S = beta[:, None, None, :].repeat(1, self.num_outputs, 1, 1)
+        S = (beta[:, None, None, :].repeat(1, self.num_outputs, 1, 1)
+                @ L @
+                beta[None, :, :, None].repeat(self.num_outputs, 1, 1, 1)
+            )[:, :, 0, 0]
+
+        diagL = torch.diagonal(L.permute((3,2,1,0)), dim1=-2,dim2=-1).permute(2,1,0)
+        S = S - torch.diag_embed(torch.sum((iK * diagL),[1,2]))
+        r_det = torch.zeros(R.shape[0],R.shape[1]).float().cuda()
+        for i in range(R.shape[0]):
+            for j in range(R.shape[1]):
+                r_det[i][j] = torch.det(R[i][j])
+
+        S = S / torch.sqrt(r_det)
+        S = S + torch.diag_embed(self.model.covar_module.outputscale)
+        S = S - M @ M.t()
+
+        return M.t(), S, V.t()
+    
     # def predict_on_noisy_inputs(self, m, s, num_samps=50000):
-    def forward(self, m, s):
+    def forward(self, m, s, method='unscented_transform'):
         """
         Approximate GP regression at noisy inputs via moment matching
         IN: mean (m) (row vector) and (s) variance of the state
@@ -114,27 +232,38 @@ class MGPR(torch.nn.Module):
         We adopt the sampling approach by leveraging the power of GPU
         """
         assert(m.shape[1] == self.num_dims and s.shape == (self.num_dims,self.num_dims))
-        self.likelihood.eval()
-        self.model.eval()
-
         if type(m) != torch.Tensor:
             m = torch.tensor(m).float().cuda()
             s = torch.tensor(s).float().cuda()
             print("Warning: gradient may break in mgpr.predict_on_noisy_inputs")
 
+        if method == 'moment_matching':
+            with torch.no_grad():
+                iK, beta = self.calculate_factorizations()
+
+            return self.predict_given_factorizations(m,s,iK,beta)
+
+        ###########################################################################
+        ###The following is the method of MCMC and Unscented Transformed###########
+
+        # self.likelihood.eval()
+        # self.model.eval()
+
         inv_s = torch.inverse(s)
 
-        # MCMC sampling approach
-        # num_samps = 500
-        # sample_model = torch.distributions.MultivariateNormal(m[0],s)
-        # pred_inputs = sample_model.rsample((num_samps,)).float()
-        # # pred_inputs[pred_inputs != pred_inputs] = 0
-        # # pred_inputs,_ = torch.sort(pred_inputs,dim=0)
-        # pred_inputs = pred_inputs.reshape(num_samps,self.num_dims).repeat(self.num_outputs,1,1)
+        if method == 'unscented_transform':
+            # Unscented Transform
+            pred_inputs = self._generate_sigma_points(m.shape[1],m[0],s)
+            pred_inputs = pred_inputs.repeat(self.num_outputs,1,1)
+        else:
+            # MCMC sampling approach
+            num_samps = 500
+            sample_model = torch.distributions.MultivariateNormal(m[0],s)
+            pred_inputs = sample_model.rsample((num_samps,)).float()
+            # pred_inputs[pred_inputs != pred_inputs] = 0
+            # pred_inputs,_ = torch.sort(pred_inputs,dim=0)
+            pred_inputs = pred_inputs.reshape(num_samps,self.num_dims).repeat(self.num_outputs,1,1)
 
-        # Unscented Transform
-        pred_inputs = self._generate_sigma_points(m.shape[1],m[0],s)
-        pred_inputs = pred_inputs.repeat(self.num_outputs,1,1)
         
 
         #centralize X ?
@@ -159,7 +288,7 @@ class MGPR(torch.nn.Module):
         # V = (covs[0:self.num_dims,self.num_dims:])
         # V = inv_s @ V
 
-        outputs = pred_outputs.rsample(torch.Size([500])).mean(0)
+        outputs = pred_outputs.rsample(torch.Size([10])).mean(0)
         # outputs = pred_outputs.mean
         M = torch.mean(outputs,1)[None,:]
         V_ = torch.cat((pred_inputs[0].t(),outputs),0)
@@ -172,17 +301,14 @@ class MGPR(torch.nn.Module):
         V = inv_s @ V
         S = covs[self.num_dims:,self.num_dims:]
 
-        self.likelihood.train()
-        self.model.train()
 
         return M, S, V
 
     def predict_y(self,X):
-        self.likelihood.eval()
-        self.model.eval()
-        X = torch.from_numpy(X).float()
+        # self.likelihood.eval()
+        # self.model.eval()
+        X = torch.from_numpy(X).float().cuda()
         X = X.repeat(self.Y.shape[0],1,1)
-        X = X.cuda()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             Y = self.model(X)
 
@@ -192,4 +318,7 @@ class MGPR(torch.nn.Module):
         if self.cuda == True:
             m = torch.tensor(m).float().cuda()
         return self.X - m
+
+    def K(self,X1,X2=None):
+        return self.model.covar_module(X1,X2)
 
