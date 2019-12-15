@@ -46,8 +46,8 @@ class LinearController(torch.nn.Module):
     def __init__(self, state_dim, control_dim, max_action=None):
         # gpflow.Parameterized.__init__(self)
         super(LinearController, self).__init__()
-        self.W = Variable(torch.rand(control_dim, state_dim).float().cuda(),requires_grad=True)
-        self.b = Variable(torch.rand(1, control_dim).float().cuda(),requires_grad=True)
+        self.W = Parameter(torch.rand(control_dim, state_dim).float().cuda(),requires_grad=True)
+        self.b = Parameter(torch.rand(1, control_dim).float().cuda(),requires_grad=True)
         self.max_action = max_action
 
     def compute_action(self, m, s, squash=True):
@@ -73,8 +73,8 @@ class LinearController(torch.nn.Module):
 
     def randomize(self):
         mean = 0; sigma = 1
-        self.W.data = mean + sigma*torch.randn(self.W.shape)
-        self.b = mean + sigma*torch.randn(self.b.shape)
+        self.W.data.normal_(mean,sigma)
+        self.b.data.normal_(mean,sigma)
 
 
 # class FakeGPR(gpflow.Parameterized):

@@ -70,6 +70,7 @@ class PILCO(torch.nn.Module):
             self.m_init = m_init
             self.S_init = S_init
         self.optimizer = None
+        self.best_reward = 0
 
 
 
@@ -93,22 +94,26 @@ class PILCO(torch.nn.Module):
         Optimize controller's parameter's
         '''
 
-        optimizer = torch.optim.Adam([
-            {'params':self.controller.parameters()},
-            ], lr=1e-3)
+        if self.optimizer == None:
+            self.controller.randomize()
+            self.optimizer = torch.optim.Adam([
+                {'params':self.controller.parameters()},
+                ], lr=1e-1)
 
         start = time.time()
         m = torch.tensor(self.m_init).float().cuda()
         s = torch.tensor(self.S_init).float().cuda()
+        current_reward = self.compute_reward()
+        current_params = self.controller.state_dict()
         reward = torch.zeros(1).float().cuda()
         for i in range(maxiter):
-            optimizer.zero_grad()
+            self.optimizer.zero_grad()
             reward = self.predict(m,s,self.horizon)[2]
             loss = -reward
             loss.backward()
             # plot_grad_flow_v2(self.controller.parameters())
             print('(Optimize Policy: Iter %d/%d - Loss: %.3f)' % (i,maxiter,loss.item()))
-            optimizer.step()
+            self.optimizer.step()
 
         end = time.time()
         print("Controller's optimization: done in %.1f seconds with reward=%.3f." % (end - start, reward))

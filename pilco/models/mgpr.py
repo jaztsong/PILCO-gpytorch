@@ -70,30 +70,10 @@ class MGPR(torch.nn.Module):
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.model)
 
         ##Use lbfgs optimzer
-        #optimizer = torch.optim.LBFGS([
-        #    {'params': self.model.parameters()},  # Includes GaussianLikelihood parameters
-        #    ])
-        #def closure():
-        #    optimizer.zero_grad()
-        #    # Output from model
-        #    output = self.model(self.X)
-        #     # Calc loss and backprop gradients
-        #    loss = -mll(output, self.Y).sum()
-        #    loss.backward()
-        #    print('Iter %d/%d - Loss: %.3f' % (i + 1, training_iter, loss.item()))
-        #    return loss
-
-        #for i in range(training_iter):
-        #    optimizer.step(closure)
-
-
-        # Use the adam optimizer
-        optimizer = torch.optim.Adam([
+        optimizer = torch.optim.LBFGS([
             {'params': self.model.parameters()},  # Includes GaussianLikelihood parameters
-            ], lr=self.lr)
-        # "Loss" for GPs - the marginal log likelihood
-        for i in range(training_iter):
-            # Zero gradients from previous iteration
+            ])
+        def closure():
             optimizer.zero_grad()
             # Output from model
             output = self.model(self.X)
@@ -101,11 +81,31 @@ class MGPR(torch.nn.Module):
             loss = -mll(output, self.Y).sum()
             loss.backward()
             print('Iter %d/%d - Loss: %.3f' % (i + 1, training_iter, loss.item()))
-            optimizer.step()
+            return loss
+
+        for i in range(training_iter):
+            optimizer.step(closure)
+
+
+        # Use the adam optimizer
+        # optimizer = torch.optim.Adam([
+        #     {'params': self.model.parameters()},  # Includes GaussianLikelihood parameters
+        #     ], lr=self.lr)
+        # # "Loss" for GPs - the marginal log likelihood
+        # for i in range(training_iter):
+        #     # Zero gradients from previous iteration
+        #     optimizer.zero_grad()
+        #     # Output from model
+        #     output = self.model(self.X)
+        #      # Calc loss and backprop gradients
+        #     loss = -mll(output, self.Y).sum()
+        #     loss.backward()
+        #     print('Iter %d/%d - Loss: %.3f' % (i + 1, training_iter, loss.item()))
+        #     optimizer.step()
 
 
 
-    def _generate_sigma_points(self,n,x,P,alpha=0.3,beta=2.0,kappa=0.1):
+    def _generate_sigma_points(self,n,x,P,alpha=0.1,beta=2.0,kappa=3):
         if n != x.size()[0]:
             raise ValueError("expected size(x) {}, but size is {}".format(
                 n, x.size()[0]))
@@ -120,13 +120,20 @@ class MGPR(torch.nn.Module):
 
 
         sigmas = torch.zeros((2*n+1, n)).float().cuda()
+        W_c = torch.ones(2*n+1).float().cuda()
+        W_m = torch.ones(2*n+1).float().cuda()
         sigmas[0] = x
+        W_c[0] = lambda_/(n+lambda_) + (1 - alpha**2 + beta)
+        W_m[0] = lambda_/(n+lambda_)
         for k in range(n):
             # pylint: disable=bad-whitespace
             sigmas[k+1]   = x + U[k]
             sigmas[n+k+1] = x - U[k]
+            W_c[2*k+1] = W_m[2*k+1] = 0.5/(lambda_ + n)
+            W_c[2*k+2] = W_m[2*k+2] = 0.5/(lambda_ + n)
 
-        return sigmas
+
+        return sigmas, W_m, W_c
 
     def calculate_factorizations(self):
         '''
@@ -142,10 +149,15 @@ class MGPR(torch.nn.Module):
 
         K = self.K(self.model.train_inputs[0]).evaluate()
         batched_eye = torch.eye(self.model.train_inputs[0].shape[1]).repeat(self.model.train_targets.shape[0],1,1).float().cuda()
-        L = psd_safe_cholesky(K + self.model.likelihood.noise[:,None]*batched_eye)
-        iK = torch.cholesky_solve(batched_eye, L)
-        Y_ = self.model.train_targets[:,:,None]
-        beta = torch.cholesky_solve(Y_, L)[:,:,0]
+        # L = psd_safe_cholesky(K + self.model.likelihood.noise[:,None]*batched_eye)
+        # iK = torch.cholesky_solve(batched_eye, L)
+        #work-around solution without cholesky_solve
+        iK, _ = torch.solve(batched_eye, K + self.model.likelihood.noise[:,None]*batched_eye)
+        Y_ = self.Y[:,:,None]
+        # beta = torch.cholesky_solve(Y_, L)[:,:,0]
+        #work-around solution without cholesky_solve
+        beta, _ = torch.solve(Y_, K + self.model.likelihood.noise[:,None]*batched_eye)
+        beta = beta[:,:,0]
 
         return iK, beta
     def predict_given_factorizations(self, m, s ,iK, beta):
@@ -222,7 +234,7 @@ class MGPR(torch.nn.Module):
         return M.t(), S, V.t()
     
     # def predict_on_noisy_inputs(self, m, s, num_samps=50000):
-    def forward(self, m, s, method='unscented_transform'):
+    def forward(self, m, s, method='moment_matching'):
         """
         Approximate GP regression at noisy inputs via moment matching
         IN: mean (m) (row vector) and (s) variance of the state
@@ -238,9 +250,7 @@ class MGPR(torch.nn.Module):
             print("Warning: gradient may break in mgpr.predict_on_noisy_inputs")
 
         if method == 'moment_matching':
-            with torch.no_grad():
-                iK, beta = self.calculate_factorizations()
-
+            iK, beta = self.calculate_factorizations()
             return self.predict_given_factorizations(m,s,iK,beta)
 
         ###########################################################################
@@ -253,13 +263,19 @@ class MGPR(torch.nn.Module):
 
         if method == 'unscented_transform':
             # Unscented Transform
-            pred_inputs = self._generate_sigma_points(m.shape[1],m[0],s)
+            pred_inputs, W_m, W_c = self._generate_sigma_points(m.shape[1],m[0],s)
             pred_inputs = pred_inputs.repeat(self.num_outputs,1,1)
         else:
             # MCMC sampling approach
-            num_samps = 500
-            sample_model = torch.distributions.MultivariateNormal(m[0],s)
-            pred_inputs = sample_model.rsample((num_samps,)).float()
+            num_samps = 200
+            try:
+                sample_model = gpytorch.distributions.MultivariateNormal(m[0],s)
+            except:
+                import pdb;pdb.set_trace()
+                
+
+
+            pred_inputs = sample_model.rsample(torch.Size([num_samps])).float()
             # pred_inputs[pred_inputs != pred_inputs] = 0
             # pred_inputs,_ = torch.sort(pred_inputs,dim=0)
             pred_inputs = pred_inputs.reshape(num_samps,self.num_dims).repeat(self.num_outputs,1,1)
@@ -290,11 +306,16 @@ class MGPR(torch.nn.Module):
 
         outputs = pred_outputs.rsample(torch.Size([10])).mean(0)
         # outputs = pred_outputs.mean
-        M = torch.mean(outputs,1)[None,:]
+        if method == 'unscented_transform':
+            M = torch.mean(W_m*outputs,1)[None,:]
+        else:
+            M = torch.mean(outputs,1)[None,:]
         V_ = torch.cat((pred_inputs[0].t(),outputs),0)
         fact = 1.0 / (V_.size(1) - 1)
         V_ -= torch.mean(V_, dim=1, keepdim=True)
         V_t = V_.t()  # if complex: mt = m.t().conj()
+        if method == 'unscented_transform':
+            V_ = V_*W_c
         covs =  fact * V_.matmul(V_t).squeeze()
         # covs = np.cov(pred_inputs[0].t().cpu().numpy(),pred_outputs.mean.cpu().numpy())
         V = covs[0:self.num_dims,self.num_dims:]

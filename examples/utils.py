@@ -8,6 +8,7 @@ def rollout(env, pilco, timesteps, verbose=True, random=False, SUBS=1, render=Tr
     x = env.reset()
     for timestep in range(timesteps):
         if render: env.render()
+        print("controller")
         u = policy(env, pilco, x, random)
         for i in range(SUBS):
             x_new, _, done, _ = env.step(u)
