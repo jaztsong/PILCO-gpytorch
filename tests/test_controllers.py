@@ -5,10 +5,10 @@ from pilco.controllers import RbfController, LinearController, squash_sin
 import numpy as np
 import os
 import torch
-import oct2py
-octave = oct2py.Oct2Py()
-dir_path = os.path.dirname(os.path.realpath("__file__")) + "/tests/Matlab Code"
-octave.addpath(dir_path)
+# import oct2py
+# octave = oct2py.Oct2Py()
+# dir_path = os.path.dirname(os.path.realpath("__file__")) + "/tests/Matlab Code"
+# octave.addpath(dir_path)
 
 
 def test_rbf():
@@ -21,7 +21,7 @@ def test_rbf():
     X0 = np.random.rand(100, d)
     A = np.random.rand(d, k)
     Y0 = np.sin(X0).dot(A) + 1e-3*(np.random.rand(100, k) - 0.5)  #  Just something smooth
-    rbf = LinearController(3, 2, b)
+    rbf = RbfController(3, 2, b)
     rbf.set_XY(X0, Y0)
 
     # Generate input
@@ -29,8 +29,11 @@ def test_rbf():
     s = np.random.rand(d, d)
     s = s.dot(s.T)  # Make s positive semidefinite
 
-    M, S, V = rbf.compute_action(m, s)
+    M, S, V = rbf.compute_action(m, s, squash=False)
 
+    print("M\n",M)
+    print("S\n",S)
+    print("V\n",V)
     # convert data to the struct expected by the MATLAB implementation
     lengthscales = rbf.model.covar_module.lengthscale.cpu().detach().numpy().squeeze()
     variance = 1*np.ones(k)  
@@ -117,6 +120,6 @@ def test_squash():
 
 
 if __name__ == '__main__':
-    # test_rbf()
+    test_rbf()
     # test_linear()
-    test_squash()
+    # test_squash()

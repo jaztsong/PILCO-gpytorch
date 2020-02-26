@@ -73,17 +73,26 @@ class LinearController(torch.nn.Module):
 
     def randomize(self):
         mean = 0; sigma = 1
-        self.W.data.normal_(mean,sigma)
-        self.b.data.normal_(mean,sigma)
+        with torch.no_grad():
+            self.W.data.normal_(mean,sigma)
+            self.b.data.normal_(mean,sigma)
 
 
-# class FakeGPR(gpflow.Parameterized):
-#     def __init__(self, X, Y, kernel):
-#         gpflow.Parameterized.__init__(self)
-#         self.X = gpflow.Param(X)
-#         self.Y = gpflow.Param(Y)
-#         self.kern = kernel
-#         self.likelihood = gpflow.likelihoods.Gaussian()
+class FakeGPR(torch.nn.Module):
+    def __init__(self, X, Y, kernel):
+        super(FakeGPR, self).__init__()
+        self.X = Parameter(torch.tensor(X).float().cuda(),requires_grad=True)
+        self.Y = Parameter(torch.tensor(Y).float().cuda(),requires_grad=True)
+        self.covar_module = kernel
+        # initialize likelihood and model
+        self.likelihood = gpytorch.likelihoods.GaussianLikelihood(
+                # noise_prior=gpytorch.priors.GammaPrior(2,1.5),
+                batch_shape=torch.Size([Y.shape[0]]))
+
+    def set_train_data(self, X, Y, strict=None):
+        self.X = Parameter(torch.tensor(X).float().cuda(),requires_grad=True)
+        self.Y = Parameter(torch.tensor(Y).float().cuda(),requires_grad=True)
+
 
 class RbfController(MGPR):
     '''
@@ -94,13 +103,27 @@ class RbfController(MGPR):
     def __init__(self, state_dim, control_dim, num_basis_functions, max_action=None):
         MGPR.__init__(self,
             np.random.randn(num_basis_functions, state_dim),
-            0.1*np.random.randn(num_basis_functions, control_dim)
+            0.1*np.random.randn(num_basis_functions, control_dim),
+            standarilze=False
         )
 
         # Remove the scale kernel which is the variance
-        self.model.covar_module = self.model.covar_module.base_kernel
         self.max_action = max_action
 
+    def create_model(self, X, Y):
+        kern = gpytorch.kernels.ScaleKernel(
+                gpytorch.kernels.RBFKernel(ard_num_dims=self.num_dims,
+                    # lengthscale_prior = gpytorch.priors.GammaPrior(1,10),
+                    batch_shape=torch.Size([self.num_outputs])),
+                batch_shape=torch.Size([self.num_outputs]),
+                outputscale_constraint=gpytorch.constraints.Interval(1.0,1.0+1e-5),
+                # outputscale_prior = gpytorch.priors.GammaPrior(1.5,2),
+                )
+        self.model = FakeGPR(X, Y, kern)
+        self.model.cuda()
+
+    def optimize(self,restarts=1, training_iter = 200):
+        raise NotImplementedError
 
     def compute_action(self, m, s, squash=True):
         '''
@@ -108,7 +131,9 @@ class RbfController(MGPR):
         IN: mean (m) and variance (s) of the state
         OUT: mean (M) and variance (S) of the action
         '''
-        M, S, V = self.predict_on_noisy_inputs(m, s)
+        iK, beta = self.calculate_factorizations()
+        M, S, V = self.predict_given_factorizations(m, s, 0.0 * iK, beta)
+        S = S - torch.diag(self.model.covar_module.outputscale - 1e-6)
         if squash:
             M, S, V2 = squash_sin(M, S, self.max_action)
             V = V @ V2
@@ -117,9 +142,8 @@ class RbfController(MGPR):
 
     def randomize(self):
         print("Randomising controller")
-        self.model.covar_module.lengthscale = torch.rand(self.num_outputs,1,self.num_dims).cuda()
-
-        X = torch.randn(self.num_datapoints,self.num_dims).repeat(self.num_outputs,1,1).cuda()
-        Y = 0.1*torch.randn(self.num_outputs,self.num_datapoints).cuda()
-        self.model.set_train_data(X,Y)
+        with torch.no_grad():
+            self.X.data.normal_(0,1)
+            self.Y.data.normal_(0,0.1) 
+            self.model.covar_module.base_kernel.lengthscale.normal_(0,1)
 

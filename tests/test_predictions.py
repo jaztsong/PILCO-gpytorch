@@ -4,26 +4,26 @@ sys.path.append("/home/song3/Research/PILCO-gpytorch")
 from pilco.models import MGPR
 import numpy as np
 import os
-import oct2py
-octave = oct2py.Oct2Py()
-dir_path = os.path.dirname(os.path.realpath("__file__")) + "/tests/Matlab Code"
-octave.addpath(dir_path)
+# import oct2py
+# octave = oct2py.Oct2Py()
+# dir_path = os.path.dirname(os.path.realpath("__file__")) + "/tests/Matlab Code"
+# octave.addpath(dir_path)
 
 def predict_wrapper(mgpr, m, s):
     return mgpr.predict_on_noisy_inputs(m, s)
 
 def test_predictions():
-    # np.random.seed(0)
+    np.random.seed(0)
     d = 3  # Input dimension
     k = 2  # Number of outputs
     n = 100 # number of datapoints
 
     # Training Dataset
-    X0 = np.random.randn(n, d)
+    X0 = np.random.rand(n, d)
     A = np.random.rand(d, k)
     Y0 = np.sin(X0).dot(A) + 1e-3*(np.random.rand(n, k) - 0.5)  #  Just something smooth
 
-    mgpr = MGPR(X0, Y0)
+    mgpr = MGPR(X0, Y0, standarilze=False)
 
     mgpr.optimize()
 
@@ -54,16 +54,17 @@ def test_predictions():
          np.sqrt(noise[:, None]))
     )).T
 
-    gpmodel = oct2py.io.Struct()
-    gpmodel.hyp = hyp
-    gpmodel.inputs = X0
-    gpmodel.targets = Y0
+    # gpmodel = oct2py.io.Struct()
+    # gpmodel.hyp = hyp
+    # gpmodel.inputs = X0
+    # gpmodel.targets = Y0
 
-    # Call function in octave
-    M_mat, S_mat, V_mat = octave.gp0(gpmodel, m.T, s, nout=3)
-    print(M - M_mat.T)
-    print(S - S_mat)
-    print(V - V_mat)
+    # # Call function in octave
+    # M_mat, S_mat, V_mat = octave.gp0(gpmodel, m.T, s, nout=3)
+    print(m)
+    print(M)
+    print(S)
+    print(V)
     import pdb;pdb.set_trace()
     assert M.shape == M_mat.T.shape
     assert S.shape == S_mat.shape
